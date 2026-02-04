@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>OHH → GTO Wizard HH 変換</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; margin: 0; }
+    header { padding: 14px 16px; border-bottom: 1px solid rgba(127,127,127,.35); }
+    h1 { font-size: 16px; margin: 0 0 6px 0; }
+    .sub { font-size: 12px; opacity: .8; }
+    main { padding: 14px 16px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+    textarea { width: 100%; min-height: 420px; resize: vertical; padding: 10px; border-radius: 10px; border: 1px solid rgba(127,127,127,.45); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; line-height: 1.35; }
+    .panel { display: grid; gap: 10px; }
+    .controls { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; align-items: end; }
+    @media (max-width: 980px) { .controls { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    label { display: grid; gap: 4px; font-size: 12px; }
+    input, select, button { padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(127,127,127,.45); font-size: 12px; }
+    button { cursor: pointer; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .status { font-size: 12px; padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(127,127,127,.35); opacity: .9; }
+    .ok { border-color: rgba(80,160,80,.45); }
+    .err { border-color: rgba(200,80,80,.55); }
+    .muted { opacity: .8; }
+    .hint { font-size: 12px; opacity: .8; line-height: 1.4; }
+    .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono"; border: 1px solid rgba(127,127,127,.45); border-bottom-width: 2px; padding: 1px 6px; border-radius: 7px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>OHH(JSON) → GTO Wizardに貼れるテキストHH 変換</h1>
+    <div class="sub">左にOHH(JSON)を貼る → Convert → 右の出力をCopyしてGTO Wizardへ。通信なし（ローカル処理）。</div>
+  </header>
+
+  <main class="panel">
+    <div class="controls">
+      <label>Hero名（推奨）
+        <input id="heroName" value="jGa" placeholder="例: jGa" />
+      </label>
+
+      <label>Hero player_id（任意）
+        <input id="heroId" value="" placeholder="例: 4" inputmode="numeric" />
+      </label>
+
+      <label>通貨記号
+        <input id="cur" value="$" placeholder="$ (空でもOK)" />
+      </label>
+
+      <label>ホールカード表示
+        <select id="reveal">
+          <option value="hero" selected>Heroのみ</option>
+          <option value="showdown">残った人のみ</option>
+          <option value="all">全員</option>
+        </select>
+      </label>
+
+      <label>名前を安全化
+        <select id="sanitize">
+          <option value="on" selected>ON（推奨）</option>
+          <option value="off">OFF</option>
+        </select>
+      </label>
+
+      <div class="row">
+        <button id="convertBtn">Convert</button>
+        <button id="copyBtn">Copy</button>
+        <button id="downloadBtn">Download .txt</button>
+      </div>
+    </div>
+
+    <div id="status" class="status muted">準備OK。左にOHH(JSON)を貼って Convert。</div>
+
+    <div class="grid">
+      <div>
+        <div class="hint">入力（OHH JSON）。単一JSON / JSON配列 / 複数JSONを空行区切り すべて対応。</div>
+        <textarea id="input" spellcheck="false" placeholder='ここにOHH(JSON)を貼り付け'></textarea>
+      </div>
+      <div>
+        <div class="hint">出力（GTO Wizard貼り付け用テキスト）。</div>
+        <textarea id="output" spellcheck="false" readonly></textarea>
+        <div class="hint">コツ: Wizardで弾かれたら「Hero名」「名前安全化ON」「Heroのみ表示」でほぼ通ります。</div>
+      </div>
+    </div>
+
+    <div class="hint">
+      便利操作: 入力欄に貼り付け → <span class="kbd">Convert</span> → <span class="kbd">Copy</span> → GTO WizardのSingle Handへ貼る。
+    </div>
+  </main>
+
+<script>
+(function(){
+  const el = (id) => document.getElementById(id);
+  const statusEl = el("status");
+  const inputEl = el("input");
+  const outputEl = el("output");
+
+  function setStatus(msg, ok=true){
+    statusEl.textContent = msg;
+    statusEl.classList.remove("ok","err","muted");
+    statusEl.classList.add(ok ? "ok" : "err");
+  }
+
+  function fmt(n){
+    if (n === null || n === undefined || Number.isNaN(Number(n))) return "0";
+    const v = Math.round(Number(n) * 100) / 100;
+    const s = v.toFixed(2);
+    return s.replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+  }
+
+  function sanitizeName(name){
+    const s = String(name ?? "").trim().replace(/\s+/g, "_");
+    // Keep alnum + underscore only (safe for parsers)
+    const cleaned = s.replace(/[^0-9A-Za-z_]/g, "");
+    return cleaned || "Player";
+  }
+
+  function parseISOToUTC(iso){
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return { handId: String(Date.now()), ts: "1970/01/01 00:00:00" };
+    const handId = String(d.getTime());
+    const pad = (x) => String(x).padStart(2,"0");
+    const ts = `${d.getUTCFullYear()}/${pad(d.getUTCMonth()+1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+    return { handId, ts };
+  }
+
+  function loadJsonObjects(text){
+    const t = (text ?? "").trim();
+    if (!t) return [];
+    try{
+      const obj = JSON.parse(t);
+      if (Array.isArray(obj)) return obj;
+      if (obj && typeof obj === "object") return [obj];
+      throw new Error("Unsupported JSON root type.");
+    }catch(e){
+      // multiple JSON objects separated by blank lines
+      const parts = t.split(/\n\s*\n/g).map(x => x.trim()).filter(Boolean);
+      return parts.map(p => JSON.parse(p));
+    }
+  }
+
+  function getOHHRoot(obj){
+    if (obj && typeof obj === "object" && obj.ohh && typeof obj.ohh === "object") return obj.ohh;
+    return obj;
+  }
+
+  function isPostAction(a){
+    const act = String(a ?? "").toLowerCase();
+    return act.includes("post sb") || act.includes("post bb") || act.includes("post ante") ||
+           act.includes("post small blind") || act.includes("post big blind") || act.includes("post");
+  }
+
+  function normalizeStreetName(s){
+    const x = String(s ?? "").toLowerCase();
+    if (x === "preflop") return "Preflop";
+    if (x === "flop") return "Flop";
+    if (x === "turn") return "Turn";
+    if (x === "river") return "River";
+    if (x === "showdown") return "Showdown";
+    return s;
+  }
+
+  function cardsBracket(cards){
+    return `[${(cards ?? []).join(" ")}]`;
+  }
+
+  function buildPlayers(ohh, doSanitize){
+    const playersRaw = Array.isArray(ohh.players) ? ohh.players : [];
+    const seat2p = new Map();
+    const id2p = new Map();
+    const used = new Map();
+
+    for (const p of playersRaw){
+      const pid = Number(p.id);
+      const seat = Number(p.seat);
+      const rawName = String(p.name ?? `Player${pid}`);
+      let name = rawName;
+
+      if (doSanitize){
+        let base = sanitizeName(rawName);
+        if (used.has(base)) base = `${base}_${seat}`;
+        used.set(base, true);
+        name = base;
+      }
+
+      const stack = Number(p.starting_stack ?? 0);
+      const cards = Array.isArray(p.cards) ? p.cards.slice() : [];
+
+      const pl = { pid, seat, rawName, name, stack, cards };
+      seat2p.set(seat, pl);
+      id2p.set(pid, pl);
+    }
+
+    return { seat2p, id2p };
+  }
+
+  function findHero(ohh, id2p, heroNameInput, heroIdInput, doSanitize){
+    const heroId = (heroIdInput ?? "").trim();
+    if (heroId){
+      const pid = Number(heroId);
+      if (id2p.has(pid)) return id2p.get(pid);
+      throw new Error(`Hero player_id=${heroId} が players に見つかりません。`);
+    }
+
+    const heroName = (heroNameInput ?? "").trim();
+    if (heroName){
+      const target = doSanitize ? sanitizeName(heroName) : heroName;
+      for (const pl of id2p.values()){
+        if (pl.name === target || pl.rawName === heroName) return pl;
+      }
+    }
+
+    const hp = ohh.hero_player_id;
+    if (typeof hp === "number" && id2p.has(hp)) return id2p.get(hp);
+
+    throw new Error("Heroを特定できません。Hero名（推奨）かHero player_idを指定してください。");
+  }
+
+  function processActions(actions, id2p, cur, state){
+    // state: { contrib: Map(pid->number), highest: number, inHand: Set(pid) }
+    const lines = [];
+    for (const a of actions){
+      const pid = Number(a.player_id);
+      if (!id2p.has(pid)) continue;
+      const pl = id2p.get(pid);
+
+      const act = String(a.action ?? "").trim();
+      const actL = act.toLowerCase();
+      const amt = Number(a.amount ?? 0);
+
+      const getC = () => state.contrib.get(pid) ?? 0;
+      const setC = (v) => state.contrib.set(pid, v);
+
+      if (actL.includes("post sb") || actL.includes("post small blind")){
+        const newC = getC() + amt;
+        setC(newC);
+        state.highest = Math.max(state.highest, newC);
+        lines.push(`${pl.name}: posts small blind ${cur}${fmt(amt)}`);
+        continue;
+      }
+      if (actL.includes("post bb") || actL.includes("post big blind")){
+        const newC = getC() + amt;
+        setC(newC);
+        state.highest = Math.max(state.highest, newC);
+        lines.push(`${pl.name}: posts big blind ${cur}${fmt(amt)}`);
+        continue;
+      }
+      if (actL.includes("post ante")){
+        const newC = getC() + amt;
+        setC(newC);
+        state.highest = Math.max(state.highest, newC);
+        lines.push(`${pl.name}: posts ante ${cur}${fmt(amt)}`);
+        continue;
+      }
+
+      if (actL === "fold"){
+        state.inHand.delete(pid);
+        lines.push(`${pl.name}: folds`);
+        continue;
+      }
+      if (actL === "check"){
+        lines.push(`${pl.name}: checks`);
+        continue;
+      }
+
+      if (actL === "bet"){
+        const newTotal = amt; // OHH: often "total this street"
+        const put = Math.max(0, newTotal - getC());
+        setC(newTotal);
+        state.highest = Math.max(state.highest, newTotal);
+        lines.push(`${pl.name}: bets ${cur}${fmt(put)}`);
+        continue;
+      }
+
+      if (actL === "call"){
+        let newTotal = amt;
+        let put = newTotal - getC();
+        if (put < -1e-9){
+          // exporter might store "put in" instead
+          put = amt;
+          newTotal = getC() + put;
+        }
+        setC(newTotal);
+        state.highest = Math.max(state.highest, newTotal);
+        lines.push(`${pl.name}: calls ${cur}${fmt(Math.max(0, put))}`);
+        continue;
+      }
+
+      if (actL === "raise" || actL.includes("all")){
+        const highestBefore = state.highest;
+        let newTotal = amt;
+
+        // if exporter stored "raise increment" instead of "raise to"
+        if (newTotal <= highestBefore + 1e-9){
+          newTotal = highestBefore + amt;
+        }
+
+        const raiseInc = Math.max(0, newTotal - highestBefore);
+        const put = Math.max(0, newTotal - getC());
+        setC(newTotal);
+        state.highest = Math.max(state.highest, newTotal);
+
+        lines.push(`${pl.name}: raises ${cur}${fmt(raiseInc)} to ${cur}${fmt(newTotal)}`);
+        continue;
+      }
+
+      // fallback
+      if (amt) lines.push(`${pl.name}: ${act} ${cur}${fmt(amt)}`);
+      else lines.push(`${pl.name}: ${act}`);
+    }
+    return lines;
+  }
+
+  function convertOne(obj, opts){
+    const ohh = getOHHRoot(obj);
+
+    const doSanitize = opts.sanitize;
+    const { seat2p, id2p } = buildPlayers(ohh, doSanitize);
+    const hero = findHero(ohh, id2p, opts.heroName, opts.heroId, doSanitize);
+
+    const sb = Number(ohh.small_blind_amount ?? 0);
+    const bb = Number(ohh.big_blind_amount ?? 0);
+    const table = String(ohh.table_name ?? "Table");
+    const tableSize = Number(ohh.table_size ?? seat2p.size);
+    const dealerSeat = Number(ohh.dealer_seat ?? 1);
+
+    const startIso = String(ohh.start_date_utc ?? obj.createdAt ?? new Date().toISOString());
+    const { handId, ts } = parseISOToUTC(startIso);
+
+    const cur = (opts.cur ?? "");
+    const out = [];
+
+    out.push(`PokerStars Hand #${handId}:  Hold'em No Limit (${cur}${fmt(sb)}/${cur}${fmt(bb)}) - ${ts} UTC`);
+    out.push(`Table '${table}' ${tableSize}-max Seat #${dealerSeat} is the button`);
+
+    const seats = Array.from(seat2p.keys()).sort((a,b)=>a-b);
+    for (const s of seats){
+      const pl = seat2p.get(s);
+      out.push(`Seat ${pl.seat}: ${pl.name} (${cur}${fmt(pl.stack)} in chips)`);
+    }
+
+    // rounds map
+    const rounds = new Map();
+    for (const r of (ohh.rounds ?? [])){
+      rounds.set(normalizeStreetName(r.street), r);
+    }
+    const pre = rounds.get("Preflop");
+    if (!pre) throw new Error("Preflopが見つかりません。");
+
+    // Preflop: print initial posts first, then HOLE CARDS, then the rest
+    const preActions = Array.isArray(pre.actions) ? pre.actions : [];
+    let cut = 0;
+    while (cut < preActions.length && isPostAction(preActions[cut].action)) cut++;
+
+    const statePre = {
+      contrib: new Map(Array.from(id2p.keys()).map(pid => [pid, 0])),
+      highest: 0,
+      inHand: new Set(Array.from(id2p.keys()))
+    };
+
+    const prePosts = preActions.slice(0, cut);
+    const preRest  = preActions.slice(cut);
+
+    out.push(...processActions(prePosts, id2p, cur, statePre));
+    out.push("*** HOLE CARDS ***");
+    if (hero.cards && hero.cards.length === 2){
+      out.push(`Dealt to ${hero.name} ${cardsBracket(hero.cards)}`);
+    } else {
+      // WizardはHero cardsがないと弾くことが多い
+      out.push(`Dealt to ${hero.name} [?? ??]`);
+    }
+    out.push(...processActions(preRest, id2p, cur, statePre));
+
+    // FLOP / TURN / RIVER
+    let board = [];
+
+    function streetBlock(street){
+      const r = rounds.get(street);
+      if (!r) return;
+      const cards = Array.isArray(r.cards) ? r.cards : [];
+      if (street === "Flop"){
+        board = cards.slice();
+        out.push(`*** FLOP *** ${cardsBracket(board)}`);
+      } else if (street === "Turn"){
+        board = board.concat(cards);
+        out.push(`*** TURN *** ${cardsBracket(board.slice(0,3))} ${cardsBracket([board[3]])}`);
+      } else if (street === "River"){
+        board = board.concat(cards);
+        out.push(`*** RIVER *** ${cardsBracket(board.slice(0,4))} ${cardsBracket([board[4]])}`);
+      }
+
+      const state = {
+        contrib: new Map(Array.from(id2p.keys()).map(pid => [pid, 0])),
+        highest: 0,
+        inHand: statePre.inHand // 継承
+      };
+      const acts = Array.isArray(r.actions) ? r.actions : [];
+      out.push(...processActions(acts, id2p, cur, state));
+    }
+
+    streetBlock("Flop");
+    streetBlock("Turn");
+    streetBlock("River");
+
+    // SHOW DOWN
+    out.push("*** SHOW DOWN ***");
+
+    const reveal = opts.reveal;
+    const inHandPids = Array.from(statePre.inHand.values());
+
+    const showLine = (pl) => (pl.cards && pl.cards.length === 2) ? `${pl.name}: shows ${cardsBracket(pl.cards)}` : `${pl.name}: doesn't show hand`;
+
+    if (reveal === "all"){
+      for (const s of seats) out.push(showLine(seat2p.get(s)));
+    } else if (reveal === "showdown"){
+      for (const pid of inHandPids) out.push(showLine(id2p.get(pid)));
+    } else {
+      out.push(showLine(hero));
+      for (const pid of inHandPids){
+        if (pid === hero.pid) continue;
+        out.push(`${id2p.get(pid).name}: doesn't show hand`);
+      }
+    }
+
+    // Pots / summary
+    const pots = Array.isArray(ohh.pots) ? ohh.pots : [];
+    if (pots.length){
+      for (const p of pots){
+        const wins = Array.isArray(p.player_wins) ? p.player_wins : [];
+        for (const w of wins){
+          const pid = Number(w.player_id);
+          if (!id2p.has(pid)) continue;
+          out.push(`${id2p.get(pid).name} collected ${cur}${fmt(w.win_amount ?? 0)} from pot`);
+        }
+      }
+    }
+
+    out.push("*** SUMMARY ***");
+    if (pots.length){
+      const totalPot = pots[0].amount;
+      const rake = pots[0].rake;
+      out.push(`Total pot ${cur}${fmt(totalPot)} | Rake ${cur}${fmt(rake)}`);
+    }
+    if (board.length){
+      out.push(`Board ${cardsBracket(board)}`);
+    }
+
+    return out.join("\n");
+  }
+
+  function convertAll(){
+    try{
+      const heroName = el("heroName").value;
+      const heroId = el("heroId").value;
+      const cur = el("cur").value ?? "";
+      const reveal = el("reveal").value;
+      const sanitize = el("sanitize").value === "on";
+
+      const objs = loadJsonObjects(inputEl.value);
+      if (!objs.length) throw new Error("JSONが空です。");
+
+      const outs = objs.map(o => convertOne(o, { heroName, heroId, cur, reveal, sanitize }));
+      outputEl.value = outs.join("\n\n");
+      setStatus(`変換OK: ${outs.length}ハンド`, true);
+    }catch(e){
+      outputEl.value = "";
+      setStatus(`エラー: ${e.message ?? e}`, false);
+    }
+  }
+
+  el("convertBtn").addEventListener("click", convertAll);
+
+  el("copyBtn").addEventListener("click", async () => {
+    try{
+      await navigator.clipboard.writeText(outputEl.value || "");
+      setStatus("コピーしました。GTO Wizardへ貼り付けOK。", true);
+    }catch(e){
+      setStatus("コピーに失敗しました。出力欄を手動で全選択→コピーしてください。", false);
+    }
+  });
+
+  el("downloadBtn").addEventListener("click", () => {
+    const txt = outputEl.value || "";
+    const blob = new Blob([txt], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "wizard_handhistory.txt";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setStatus("TXTをダウンロードしました。", true);
+  });
+
+})();
+</script>
+</body>
+</html>
