@@ -11,9 +11,13 @@
     h1 { font-size: 16px; margin: 0 0 6px 0; }
     .sub { font-size: 12px; opacity: .8; line-height: 1.4; }
     main { padding: 14px 16px; display: grid; gap: 10px; }
-    .row { display: flex; gap: 8px; flex-wrap: wrap; }
-    button { padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(127,127,127,.45); font-size: 12px; cursor: pointer; }
-    .status { font-size: 12px; padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(127,127,127,.35); opacity: .9; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    button, select {
+      padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(127,127,127,.45);
+      font-size: 12px;
+    }
+    button { cursor: pointer; }
+    .status { font-size: 12px; padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(127,127,127,.35); opacity: .95; }
     .ok { border-color: rgba(80,160,80,.45); }
     .err { border-color: rgba(200,80,80,.55); }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -26,14 +30,16 @@
     }
     .hint { font-size: 12px; opacity: .8; line-height: 1.4; }
     .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono"; border: 1px solid rgba(127,127,127,.45); border-bottom-width: 2px; padding: 1px 6px; border-radius: 7px; }
+    .spacer { flex: 1; }
   </style>
 </head>
 <body>
 <header>
   <h1>OHH(JSON) → GTO Wizardに貼れるテキストHH</h1>
   <div class="sub">
-    左にOHH(JSON)を貼る → <span class="kbd">Convert</span> → 右の出力を <span class="kbd">Copy</span> → GTO Wizardへ貼り付け。<br>
-    Heroが特定できないときだけ、最初に1回だけポップアップでHero名を聞きます（以後はこのブラウザ内に記憶）。
+    左にOHH(JSON)を貼る → <span class="kbd">Convert</span> → 右の出力を <span class="kbd">Copy</span> → GTO Wizardへ。<br>
+    Auto Heroは「ホールカード情報がある人の中で、席番号が一番小さい人」。
+    （カードがない人はHeroメニューでも選べません）
   </div>
 </header>
 
@@ -42,9 +48,16 @@
     <button id="convertBtn">Convert</button>
     <button id="copyBtn">Copy</button>
     <button id="downloadBtn">Download .txt</button>
-  </div>
 
-  <div id="status" class="status">準備OK。左にJSONを貼って Convert。</div>
+    <div class="spacer"></div>
+
+    <label class="hint" for="heroSelect">Hero:</label>
+    <select id="heroSelect" title="Heroを選択（Autoは『カードあり最小席』）">
+      <option value="auto" selected>Auto (lowest seat with hole cards)</option>
+    </select>
+
+    <div id="status" class="status">準備OK。左にJSONを貼って Convert。</div>
+  </div>
 
   <div class="grid">
     <div>
@@ -54,7 +67,7 @@
     <div>
       <div class="hint">出力（GTO Wizard貼り付け用）</div>
       <textarea id="output" spellcheck="false" readonly></textarea>
-      <div class="hint">※ 出力は「Heroのカードのみ表示」に固定（Wizardに通りやすい）。</div>
+      <div class="hint">出力は「Heroのカードのみ表示」（Wizardに通りやすい）。</div>
     </div>
   </div>
 </main>
@@ -65,8 +78,9 @@
   const inputEl = $("input");
   const outputEl = $("output");
   const statusEl = $("status");
+  const heroSelect = $("heroSelect");
 
-  // 固定：通貨記号（Wizardではほぼ飾り）
+  // 通貨記号（ほぼ飾り。固定でOK）
   const CUR = "$";
 
   function setStatus(msg, ok=true){
@@ -91,10 +105,7 @@
 
   function parseISOToUTC(iso){
     const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) {
-      const now = new Date();
-      return { handId: String(Date.now()), ts: "1970/01/01 00:00:00" };
-    }
+    if (Number.isNaN(d.getTime())) return { handId: String(Date.now()), ts: "1970/01/01 00:00:00" };
     const handId = String(d.getTime());
     const pad = (x) => String(x).padStart(2,"0");
     const ts = `${d.getUTCFullYear()}/${pad(d.getUTCMonth()+1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
@@ -110,7 +121,6 @@
       if (obj && typeof obj === "object") return [obj];
       throw new Error("JSONの形式が不正です。");
     } catch {
-      // 複数JSONを空行で区切った形式
       const parts = t.split(/\n\s*\n/g).map(x => x.trim()).filter(Boolean);
       return parts.map(p => JSON.parse(p));
     }
@@ -119,12 +129,6 @@
   function getOHHRoot(obj){
     if (obj && typeof obj === "object" && obj.ohh && typeof obj.ohh === "object") return obj.ohh;
     return obj;
-  }
-
-  function isPostAction(action){
-    const a = String(action ?? "").toLowerCase();
-    return a.includes("post sb") || a.includes("post bb") || a.includes("post ante") ||
-           a.includes("post small blind") || a.includes("post big blind");
   }
 
   function buildPlayers(ohh){
@@ -150,105 +154,146 @@
     return { seat2p, id2p };
   }
 
-  function pickHero(ohh, id2p){
-    // 1) hero_player_id が有効ならそれ
-    const hp = ohh.hero_player_id;
-    if (typeof hp === "number" && id2p.has(hp)) return id2p.get(hp);
-
-    // 2) cardsが入ってる人が1人だけならそれ
-    const withCards = Array.from(id2p.values()).filter(p => Array.isArray(p.cards) && p.cards.length === 2);
-    if (withCards.length === 1) return withCards[0];
-
-    // 3) 前回使ったHero名（このブラウザ内）を試す
-    const saved = localStorage.getItem("ohh2wizard_hero") || "";
-    if (saved){
-      for (const p of id2p.values()){
-        if (p.name === saved) return p;
-      }
-    }
-
-    // 4) それでも不明なら、ポップアップで1回だけ聞く
-    const candidates = Array.from(id2p.values()).sort((a,b)=>a.seat-b.seat).map(p => p.name);
-    const ans = window.prompt(
-      "Hero名を入力してください（例: jGa）。候補:\n" + candidates.join(", "),
-      saved || ""
-    );
-    if (!ans) throw new Error("Hero名が未入力です。");
-    const heroName = sanitizeName(ans);
-    for (const p of id2p.values()){
-      if (p.name === heroName) {
-        localStorage.setItem("ohh2wizard_hero", heroName);
-        return p;
-      }
-    }
-    throw new Error(`Hero名 '${heroName}' がplayersに見つかりません。`);
+  function isPostAction(action){
+    const a = String(action ?? "").toLowerCase();
+    return a.includes("post sb") || a.includes("post bb") || a.includes("post ante") ||
+           a.includes("post small blind") || a.includes("post big blind") || a.includes("post");
   }
 
-  function processActions(actions, id2p, state){
-    // state: { contrib: Map(pid->number), highest: number, inHand: Set(pid) }
-    const lines = [];
-    for (const a of actions){
-      const pid = Number(a.player_id);
-      if (!id2p.has(pid)) continue;
-      const pl = id2p.get(pid);
+  function pickAutoHero(id2p){
+    const withCards = Array.from(id2p.values())
+      .filter(p => Array.isArray(p.cards) && p.cards.length === 2)
+      .sort((a,b)=>a.seat-b.seat);
 
-      const act = String(a.action ?? "").trim();
-      const actL = act.toLowerCase();
-      const amt = Number(a.amount ?? 0);
-
-      const getC = () => state.contrib.get(pid) ?? 0;
-      const setC = (v) => state.contrib.set(pid, v);
-
-      if (actL.includes("post sb") || actL.includes("post small blind")){
-        const newC = getC() + amt; setC(newC); state.highest = Math.max(state.highest, newC);
-        lines.push(`${pl.name}: posts small blind ${CUR}${fmt(amt)}`); continue;
-      }
-      if (actL.includes("post bb") || actL.includes("post big blind")){
-        const newC = getC() + amt; setC(newC); state.highest = Math.max(state.highest, newC);
-        lines.push(`${pl.name}: posts big blind ${CUR}${fmt(amt)}`); continue;
-      }
-      if (actL.includes("post ante")){
-        const newC = getC() + amt; setC(newC); state.highest = Math.max(state.highest, newC);
-        lines.push(`${pl.name}: posts ante ${CUR}${fmt(amt)}`); continue;
-      }
-      if (actL === "fold"){ state.inHand.delete(pid); lines.push(`${pl.name}: folds`); continue; }
-      if (actL === "check"){ lines.push(`${pl.name}: checks`); continue; }
-
-      if (actL === "bet"){
-        const newTotal = amt;
-        const put = Math.max(0, newTotal - getC());
-        setC(newTotal); state.highest = Math.max(state.highest, newTotal);
-        lines.push(`${pl.name}: bets ${CUR}${fmt(put)}`); continue;
-      }
-
-      if (actL === "call"){
-        let newTotal = amt;
-        let put = newTotal - getC();
-        if (put < -1e-9){ put = amt; newTotal = getC() + put; }
-        setC(newTotal); state.highest = Math.max(state.highest, newTotal);
-        lines.push(`${pl.name}: calls ${CUR}${fmt(Math.max(0, put))}`); continue;
-      }
-
-      if (actL === "raise" || actL.includes("all")){
-        const highestBefore = state.highest;
-        let newTotal = amt;
-        if (newTotal <= highestBefore + 1e-9) newTotal = highestBefore + amt; // increment形式対策
-        const raiseInc = Math.max(0, newTotal - highestBefore);
-        const put = Math.max(0, newTotal - getC());
-        setC(newTotal); state.highest = Math.max(state.highest, newTotal);
-        lines.push(`${pl.name}: raises ${CUR}${fmt(raiseInc)} to ${CUR}${fmt(newTotal)}`); continue;
-      }
-
-      // fallback
-      lines.push(amt ? `${pl.name}: ${act} ${CUR}${fmt(amt)}` : `${pl.name}: ${act}`);
+    if (withCards.length){
+      const hero = withCards[0];
+      return { hero, note: `Auto Hero: ${hero.name}（カードあり最小席）` };
     }
-    return lines;
+
+    // ここに来る＝誰にもカード情報が無いOHH。
+    // Wizardが弾く可能性が高いが、一応出力は作る。
+    const seats = Array.from(id2p.values()).sort((a,b)=>a.seat-b.seat);
+    const hero = seats[0] || { name: "Player", pid: -1, seat: 0, cards: [] };
+    return { hero, note: `警告: OHHにホールカード情報がありません（Wizardで弾かれる可能性大）` };
+  }
+
+  function updateHeroMenuFromFirstHand(objs){
+    const prev = heroSelect.value;
+
+    heroSelect.innerHTML = "";
+    const optAuto = document.createElement("option");
+    optAuto.value = "auto";
+    optAuto.textContent = "Auto (lowest seat with hole cards)";
+    heroSelect.appendChild(optAuto);
+
+    if (!objs.length) return;
+
+    const ohh = getOHHRoot(objs[0]);
+    const { seat2p } = buildPlayers(ohh);
+    const seats = Array.from(seat2p.keys()).sort((a,b)=>a-b);
+
+    for (const s of seats){
+      const p = seat2p.get(s);
+      const hasCards = Array.isArray(p.cards) && p.cards.length === 2;
+
+      const opt = document.createElement("option");
+      opt.value = p.name;
+      opt.textContent = hasCards ? `${p.name} (Seat ${p.seat})` : `${p.name} (Seat ${p.seat}) - no cards`;
+      if (!hasCards) opt.disabled = true; // エラー回避：カード無しは選ばせない
+      heroSelect.appendChild(opt);
+    }
+
+    const exists = Array.from(heroSelect.options).some(o => o.value === prev && !o.disabled);
+    heroSelect.value = exists ? prev : "auto";
+  }
+
+  function renderAction(a, id2p, state){
+    const pid = Number(a.player_id);
+    if (!id2p.has(pid)) return null;
+    const pl = id2p.get(pid);
+
+    const act = String(a.action ?? "").trim();
+    const actL = act.toLowerCase();
+    const amt = Number(a.amount ?? 0);
+
+    const getC = () => state.contrib.get(pid) ?? 0;
+    const setC = (v) => state.contrib.set(pid, v);
+
+    if (actL.includes("post sb") || actL.includes("post small blind")){
+      const newC = getC() + amt; setC(newC); state.highest = Math.max(state.highest, newC);
+      return `${pl.name}: posts small blind ${CUR}${fmt(amt)}`;
+    }
+    if (actL.includes("post bb") || actL.includes("post big blind")){
+      const newC = getC() + amt; setC(newC); state.highest = Math.max(state.highest, newC);
+      return `${pl.name}: posts big blind ${CUR}${fmt(amt)}`;
+    }
+    if (actL.includes("post ante")){
+      const newC = getC() + amt; setC(newC); state.highest = Math.max(state.highest, newC);
+      return `${pl.name}: posts ante ${CUR}${fmt(amt)}`;
+    }
+
+    if (actL === "fold"){
+      state.inHand.delete(pid);
+      return `${pl.name}: folds`;
+    }
+    if (actL === "check"){
+      return `${pl.name}: checks`;
+    }
+
+    if (actL === "bet"){
+      const newTotal = amt;
+      const put = Math.max(0, newTotal - getC());
+      setC(newTotal); state.highest = Math.max(state.highest, newTotal);
+      return `${pl.name}: bets ${CUR}${fmt(put)}`;
+    }
+
+    if (actL === "call"){
+      let newTotal = amt;
+      let put = newTotal - getC();
+      if (put < -1e-9){
+        put = amt;
+        newTotal = getC() + put;
+      }
+      setC(newTotal); state.highest = Math.max(state.highest, newTotal);
+      return `${pl.name}: calls ${CUR}${fmt(Math.max(0, put))}`;
+    }
+
+    if (actL === "raise" || actL.includes("all")){
+      const highestBefore = state.highest;
+      let newTotal = amt;
+      if (newTotal <= highestBefore + 1e-9) newTotal = highestBefore + amt;
+
+      const raiseInc = Math.max(0, newTotal - highestBefore);
+      const put = Math.max(0, newTotal - getC());
+
+      setC(newTotal); state.highest = Math.max(state.highest, newTotal);
+      return `${pl.name}: raises ${CUR}${fmt(raiseInc)} to ${CUR}${fmt(newTotal)}`;
+    }
+
+    return amt ? `${pl.name}: ${act} ${CUR}${fmt(amt)}` : `${pl.name}: ${act}`;
   }
 
   function convertOne(obj){
     const ohh = getOHHRoot(obj);
     const { seat2p, id2p } = buildPlayers(ohh);
-    const hero = pickHero(ohh, id2p);
+
+    // Hero決定（Auto or メニュー指定）
+    let heroInfo;
+    const selected = heroSelect.value;
+
+    if (selected === "auto"){
+      heroInfo = pickAutoHero(id2p);
+    } else {
+      const target = sanitizeName(selected);
+      const found = Array.from(id2p.values()).find(p => p.name === target) || null;
+      if (found && found.cards && found.cards.length === 2){
+        heroInfo = { hero: found, note: `Hero: ${found.name}（メニュー指定）` };
+      } else {
+        heroInfo = pickAutoHero(id2p);
+      }
+    }
+
+    const hero = heroInfo.hero;
 
     const sb = Number(ohh.small_blind_amount ?? 0);
     const bb = Number(ohh.big_blind_amount ?? 0);
@@ -275,34 +320,55 @@
     const pre = rounds.get("Preflop");
     if (!pre) throw new Error("Preflopが見つかりません。");
 
-    const preActions = Array.isArray(pre.actions) ? pre.actions : [];
-    let cut = 0;
-    while (cut < preActions.length && isPostAction(preActions[cut].action)) cut++;
+    const allPids = Array.from(id2p.keys());
+    const inHand = new Set(allPids);
 
-    const statePre = {
-      contrib: new Map(Array.from(id2p.keys()).map(pid => [pid, 0])),
+    // Preflop
+    const preState = {
+      contrib: new Map(allPids.map(pid => [pid, 0])),
       highest: 0,
-      inHand: new Set(Array.from(id2p.keys()))
+      inHand
     };
 
-    out.push(...processActions(preActions.slice(0, cut), id2p, statePre));
-    out.push("*** HOLE CARDS ***");
-    if (hero.cards && hero.cards.length === 2) out.push(`Dealt to ${hero.name} ${cardsBracket(hero.cards)}`);
-    else out.push(`Dealt to ${hero.name} [?? ??]`);
-    out.push(...processActions(preActions.slice(cut), id2p, statePre));
+    const preActions = Array.isArray(pre.actions) ? pre.actions : [];
+    let lastPostIdx = -1;
+    for (let i = 0; i < preActions.length; i++){
+      if (isPostAction(preActions[i].action)) lastPostIdx = i;
+    }
 
+    let insertedHoleCards = false;
+    const insertHoleCards = () => {
+      if (insertedHoleCards) return;
+      insertedHoleCards = true;
+      out.push("*** HOLE CARDS ***");
+      if (hero.cards && hero.cards.length === 2){
+        out.push(`Dealt to ${hero.name} ${cardsBracket(hero.cards)}`);
+      } else {
+        out.push(`Dealt to ${hero.name} [?? ??]`);
+      }
+    };
+
+    if (lastPostIdx < 0) insertHoleCards();
+
+    for (let i = 0; i < preActions.length; i++){
+      if (i === lastPostIdx + 1) insertHoleCards();
+      const line = renderAction(preActions[i], id2p, preState);
+      if (line) out.push(line);
+    }
+    if (!insertedHoleCards) insertHoleCards();
+
+    // Streets helper
     let board = [];
-
-    function streetBlock(street){
+    function doStreet(street){
       const r = rounds.get(street);
       if (!r) return;
       const cards = Array.isArray(r.cards) ? r.cards : [];
-      const acts = Array.isArray(r.actions) ? r.actions : [];
+      const acts  = Array.isArray(r.actions) ? r.actions : [];
 
-      const state = {
-        contrib: new Map(Array.from(id2p.keys()).map(pid => [pid, 0])),
+      const st = {
+        contrib: new Map(allPids.map(pid => [pid, 0])),
         highest: 0,
-        inHand: statePre.inHand
+        inHand
       };
 
       if (street === "Flop"){
@@ -315,24 +381,30 @@
         board = board.concat(cards);
         out.push(`*** RIVER *** ${cardsBracket(board.slice(0,4))} ${cardsBracket([board[4]])}`);
       }
-      out.push(...processActions(acts, id2p, state));
+
+      for (const a of acts){
+        const line = renderAction(a, id2p, st);
+        if (line) out.push(line);
+      }
     }
 
-    streetBlock("Flop");
-    streetBlock("Turn");
-    streetBlock("River");
+    doStreet("Flop");
+    doStreet("Turn");
+    doStreet("River");
 
+    // Showdown (Heroのみshow)
     out.push("*** SHOW DOWN ***");
-    // Wizardに通しやすい：Heroのみshow、他は見せない
-    out.push((hero.cards && hero.cards.length === 2)
-      ? `${hero.name}: shows ${cardsBracket(hero.cards)}`
-      : `${hero.name}: doesn't show hand`
-    );
-    for (const pid of statePre.inHand){
+    if (hero.cards && hero.cards.length === 2){
+      out.push(`${hero.name}: shows ${cardsBracket(hero.cards)}`);
+    } else {
+      out.push(`${hero.name}: doesn't show hand`);
+    }
+    for (const pid of inHand){
       if (pid === hero.pid) continue;
       out.push(`${id2p.get(pid).name}: doesn't show hand`);
     }
 
+    // Pots / summary
     const pots = Array.isArray(ohh.pots) ? ohh.pots : [];
     if (pots.length){
       for (const p of pots){
@@ -349,30 +421,57 @@
     }
     if (board.length) out.push(`Board ${cardsBracket(board)}`);
 
-    return out.join("\n");
+    return { text: out.join("\n"), note: heroInfo.note };
   }
 
   function convertAll(){
-    try{
-      const objs = loadJsonObjects(inputEl.value);
-      if (!objs.length) throw new Error("JSONが空です。");
-      const outs = objs.map(convertOne);
-      outputEl.value = outs.join("\n\n");
-      setStatus(`変換OK: ${outs.length}ハンド`, true);
-    } catch (e) {
-      outputEl.value = "";
-      setStatus(`エラー: ${e.message ?? e}`, false);
+    const objs = loadJsonObjects(inputEl.value);
+    if (!objs.length) throw new Error("JSONが空です。");
+
+    updateHeroMenuFromFirstHand(objs);
+
+    const outs = [];
+    let note = "";
+    for (let i = 0; i < objs.length; i++){
+      const res = convertOne(objs[i]);
+      outs.push(res.text);
+      if (i === 0) note = res.note || "";
     }
+    outputEl.value = outs.join("\n\n");
+    setStatus(`変換OK: ${outs.length}ハンド。${note}`, true);
   }
 
-  $("convertBtn").addEventListener("click", convertAll);
+  // 入力が固まったらHeroメニュー更新（変換はしない）
+  let debounceTimer = null;
+  inputEl.addEventListener("input", () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      try{
+        const objs = loadJsonObjects(inputEl.value);
+        if (!objs.length) return;
+        updateHeroMenuFromFirstHand(objs);
+      } catch { /* typing中は無視 */ }
+    }, 250);
+  });
+
+  $("convertBtn").addEventListener("click", () => {
+    try { convertAll(); }
+    catch(e){ outputEl.value=""; setStatus(`エラー: ${e.message ?? e}`, false); }
+  });
+
+  heroSelect.addEventListener("change", () => {
+    if ((inputEl.value || "").trim()){
+      try { convertAll(); }
+      catch(e){ outputEl.value=""; setStatus(`エラー: ${e.message ?? e}`, false); }
+    }
+  });
 
   $("copyBtn").addEventListener("click", async () => {
     try{
       await navigator.clipboard.writeText(outputEl.value || "");
       setStatus("コピーしました。GTO Wizardへ貼り付けOK。", true);
     } catch {
-      setStatus("コピーに失敗しました。右の出力欄を手動で全選択→コピーしてください。", false);
+      setStatus("コピー失敗。右の出力欄を手動で全選択→コピーしてください。", false);
     }
   });
 
