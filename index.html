@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>OHH → GTO Wizard 変換</title>
+  <title>OHH → GTO Wizard (PokerStars形式)</title>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 0; }
     header { padding: 14px 16px; border-bottom: 1px solid rgba(127,127,127,.35); }
     h1 { font-size: 16px; margin: 0 0 6px 0; }
-    .sub { font-size: 12px; opacity: .8; line-height: 1.4; }
+    .sub { font-size: 12px; opacity: .85; line-height: 1.5; }
     main { padding: 14px 16px; display: grid; gap: 10px; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     button, select {
@@ -29,16 +29,16 @@
       font-size: 12px; line-height: 1.35;
     }
     .hint { font-size: 12px; opacity: .8; line-height: 1.4; }
-    .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New"; border: 1px solid rgba(127,127,127,.45); border-bottom-width: 2px; padding: 1px 6px; border-radius: 7px; }
+    .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono"; border: 1px solid rgba(127,127,127,.45); border-bottom-width: 2px; padding: 1px 6px; border-radius: 7px; }
     .spacer { flex: 1; }
   </style>
 </head>
 <body>
 <header>
-  <h1>OHH(JSON) → GTO Wizardに貼れるテキストHH</h1>
+  <h1>OHH(JSON) → GTO Wizard（PokerStars互換寄せ）</h1>
   <div class="sub">
-    左にOHH(JSON)を貼る → <span class="kbd">Convert</span> → <span class="kbd">Copy</span> → GTO Wizardへ。<br>
-    出力はPokerStars風に寄せます（USD表記・2桁小数・フォールド勝ちはSHOW DOWN無し・SUMMARYのSeat行あり）。
+    左にOHH(JSON) → <span class="kbd">Convert</span> → 右を <span class="kbd">Copy</span> → GTO Wizardへ貼り付け。<br>
+    仕様：ヘッダは <b>($0.50/$1.00 USD)</b> 形式、フォールド勝ちは <b>Uncalled bet → collected → doesn't show</b>、SUMMARYは <b>Seat行（button/SB/BB明示）</b> を出します。
   </div>
 </header>
 
@@ -51,7 +51,7 @@
     <div class="spacer"></div>
 
     <label class="hint" for="heroSelect">Hero:</label>
-    <select id="heroSelect" title="Heroを選択（Auto=カードあり最小Seat）">
+    <select id="heroSelect" title="Heroを選択（Autoはカードあり最小Seat）">
       <option value="auto" selected>Auto (lowest seat with hole cards)</option>
     </select>
 
@@ -64,9 +64,9 @@
       <textarea id="input" spellcheck="false" placeholder="ここにOHH(JSON)を貼り付け"></textarea>
     </div>
     <div>
-      <div class="hint">出力（GTO Wizard貼り付け用）</div>
+      <div class="hint">出力（Wizard貼り付け用）</div>
       <textarea id="output" spellcheck="false" readonly></textarea>
-      <div class="hint">※ 他プレイヤーのホールカードは出しません（Heroのみ）。</div>
+      <div class="hint">チェック：SUMMARYに <b>Seat X: Hero (button)</b> が出ていれば座席判定がズレにくいです。</div>
     </div>
   </div>
 </main>
@@ -101,26 +101,15 @@
 
   function cardsBracket(cards){ return `[${(cards ?? []).join(" ")}]`; }
 
-  function parseISOToUTC(iso){
-    const d = new Date(iso);
-    const pad = (x) => String(x).padStart(2,"0");
-    if (Number.isNaN(d.getTime())){
-      return { handId: String(Date.now()), ts: "1970/01/01 00:00:00" };
-    }
-    const handId = String(d.getTime());
-    const ts = `${d.getUTCFullYear()}/${pad(d.getUTCMonth()+1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
-    return { handId, ts };
-  }
-
   function loadJsonObjects(text){
     const t = (text ?? "").trim();
     if (!t) return [];
-    try{
+    try {
       const obj = JSON.parse(t);
       if (Array.isArray(obj)) return obj;
       if (obj && typeof obj === "object") return [obj];
       throw new Error("JSONの形式が不正です。");
-    }catch{
+    } catch {
       const parts = t.split(/\n\s*\n/g).map(x => x.trim()).filter(Boolean);
       return parts.map(p => JSON.parse(p));
     }
@@ -173,6 +162,34 @@
     return rounds.find(r => String(r.street) === street) || null;
   }
 
+  function formatET(startIso){
+    const d = new Date(startIso);
+    if (Number.isNaN(d.getTime())) return "1970/01/01 00:00:00";
+
+    const fmt = (timeZone) => {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      }).formatToParts(d).reduce((acc, p) => (acc[p.type]=p.value, acc), {});
+      // en-US parts: month/day/year
+      const yyyy = parts.year;
+      const mm = parts.month;
+      const dd = parts.day;
+      const hh = String(parts.hour).padStart(2,"0");
+      const mi = parts.minute;
+      const ss = parts.second;
+      return `${yyyy}/${mm}/${dd} ${hh}:${mi}:${ss}`;
+    };
+
+    return fmt("America/New_York");
+  }
+
   function updateHeroMenuFromFirstHand(objs){
     const prev = heroSelect.value;
 
@@ -191,10 +208,11 @@
     for (const s of seats){
       const p = seat2p.get(s);
       const hasCards = Array.isArray(p.cards) && p.cards.length === 2;
+
       const opt = document.createElement("option");
-      opt.value = String(p.pid);          // pid固定（名前変更に強い）
+      opt.value = String(p.pid); // pid指定（名前ズレに強い）
       opt.textContent = hasCards ? `Seat ${p.seat}: ${p.name}` : `Seat ${p.seat}: ${p.name} (no cards)`;
-      if (!hasCards) opt.disabled = true; // カード無しは選ばせない（Wizardエラー回避）
+      if (!hasCards) opt.disabled = true;
       heroSelect.appendChild(opt);
     }
 
@@ -202,7 +220,7 @@
     heroSelect.value = exists ? prev : "auto";
   }
 
-  function pickHero(id2p){
+  function pickHeroPid(id2p){
     const selected = heroSelect.value;
     if (selected !== "auto"){
       const pid = Number(selected);
@@ -224,15 +242,16 @@
     const ohh = getOHHRoot(obj);
     const { seat2p, id2p } = buildPlayers(ohh);
 
-    const heroPid = pickHero(id2p);
+    const heroPid = pickHeroPid(id2p);
     const hero = id2p.get(heroPid);
     if (!hero) throw new Error("Heroが見つかりません。");
 
-    // 表示名：Heroだけ固定名にする（GTO Wizardで迷子になりにくい）
+    // 表示名：Heroは必ず "Hero"
     const nameOf = (pid) => (pid === heroPid ? "Hero" : (id2p.get(pid)?.name ?? "Player"));
 
     const sb = Number(ohh.small_blind_amount ?? 0);
     const bb = Number(ohh.big_blind_amount ?? 0);
+
     const table = String(ohh.table_name ?? "Table");
     const tableSize = Number(ohh.table_size ?? seat2p.size);
 
@@ -240,11 +259,13 @@
     if (!seat2p.has(dealerSeat)) dealerSeat = hero.seat;
 
     const startIso = String(ohh.start_date_utc ?? obj.createdAt ?? new Date().toISOString());
-    const { handId, ts } = parseISOToUTC(startIso);
+    const d = new Date(startIso);
+    const handId = Number.isNaN(d.getTime()) ? String(Date.now()) : String(d.getTime());
+    const tsET = formatET(startIso);
 
     const seats = Array.from(seat2p.keys()).sort((a,b)=>a-b);
 
-    // Preflop postsからSB/BB pid を取る（SUMMARYの役割表示用）
+    // preflop から SB/BB pid 特定
     let sbPid = null, bbPid = null;
     const pre = getRound(ohh, "Preflop");
     const preActs = Array.isArray(pre?.actions) ? pre.actions : [];
@@ -255,43 +276,46 @@
     }
     const btnPid = seat2p.get(dealerSeat)?.pid ?? null;
 
-    // pot情報（勝ち額はOHH側に入ってることが多い）
+    // pot / rake / winners
+    const winMap = new Map(); // pid -> amount
     let totalPot = 0, rake = 0;
-    const winMap = new Map(); // pid -> win_amount
     const pots = Array.isArray(ohh.pots) ? ohh.pots : [];
     if (pots.length){
       totalPot = Number(pots[0].amount ?? 0);
       rake = Number(pots[0].rake ?? 0);
-      for (const p of pots){
-        for (const w of (p.player_wins ?? [])){
-          const pid = Number(w.player_id);
-          winMap.set(pid, (winMap.get(pid) || 0) + Number(w.win_amount ?? 0));
-        }
+    }
+    for (const p of pots){
+      for (const w of (p.player_wins ?? [])){
+        const pid = Number(w.player_id);
+        winMap.set(pid, (winMap.get(pid) || 0) + Number(w.win_amount ?? 0));
       }
     }
 
+    // tracking
+    const active = new Set(Array.from(id2p.keys()));
+    const foldAtMap = new Map();     // pid -> street
+    const invested = new Map();      // pid -> total invested (for "(didn't bet)")
+    for (const pid of id2p.keys()) invested.set(pid, 0);
+
     const out = [];
-    out.push(`PokerStars Hand #${handId}:  Hold'em No Limit (${CUR}${money(sb)}/${CUR}${money(bb)} ${CURCODE}) - ${ts} UTC`);
+
+    // 1st line (PokerStarsっぽく：USD+小数2桁)
+    out.push(`PokerStars Hand #${handId}: Hold'em No Limit (${CUR}${money(sb)}/${CUR}${money(bb)} ${CURCODE}) - ${tsET} ET`);
     out.push(`Table '${table}' ${tableSize}-max Seat #${dealerSeat} is the button`);
+
+    // seat lines
     for (const s of seats){
       const p = seat2p.get(s);
       out.push(`Seat ${p.seat}: ${nameOf(p.pid)} (${CUR}${money(p.stack)} in chips)`);
     }
 
-    // 状態追跡
-    const active = new Set(Array.from(id2p.keys()));
-    const foldAt = new Map();    // pid -> street
-    const invested = new Map();  // pid -> total invested (for "(didn't bet)")
-    for (const pid of id2p.keys()) invested.set(pid, 0);
-
-    // 盤面
-    const board = [];
-
-    // handがfoldで終わったか
-    let endedByFold = false;
-    let endStreet = null;
-    let uncalledLine = null;
-    let winnerPid = null;
+    function roleTags(pid){
+      const tags = [];
+      if (btnPid !== null && pid === btnPid) tags.push("button");
+      if (sbPid !== null && pid === sbPid) tags.push("small blind");
+      if (bbPid !== null && pid === bbPid) tags.push("big blind");
+      return tags.map(t => `(${t})`).join(" ");
+    }
 
     function streetState(){
       return { contrib: new Map(Array.from(id2p.keys()).map(pid => [pid, 0])), highest: 0 };
@@ -302,71 +326,79 @@
       return { max: arr[0] ?? 0, second: arr[1] ?? 0 };
     }
 
+    // action printer (PokerStars風)
     function applyAction(a, st, street){
       const pid = Number(a.player_id);
       if (!id2p.has(pid)) return null;
-
       const who = nameOf(pid);
       const act = normalizeAct(a.action);
       const amt = Number(a.amount ?? 0);
 
       const getC = () => st.contrib.get(pid) ?? 0;
       const setC = (v) => st.contrib.set(pid, v);
-
-      const addInvest = (x) => invested.set(pid, (invested.get(pid) || 0) + Math.max(0, x));
+      const addInv = (x) => invested.set(pid, (invested.get(pid) || 0) + Math.max(0, x));
 
       if (act === "post_sb"){
-        addInvest(amt);
+        addInv(amt);
         const newC = getC() + amt; setC(newC); st.highest = Math.max(st.highest, newC);
         return `${who}: posts small blind ${CUR}${money(amt)}`;
       }
       if (act === "post_bb"){
-        addInvest(amt);
+        addInv(amt);
         const newC = getC() + amt; setC(newC); st.highest = Math.max(st.highest, newC);
         return `${who}: posts big blind ${CUR}${money(amt)}`;
       }
       if (act === "post_ante"){
-        addInvest(amt);
+        addInv(amt);
         const newC = getC() + amt; setC(newC); st.highest = Math.max(st.highest, newC);
         return `${who}: posts the ante ${CUR}${money(amt)}`;
       }
 
       if (act === "fold"){
-        if (!foldAt.has(pid)) foldAt.set(pid, street);
+        if (!foldAtMap.has(pid)) foldAtMap.set(pid, street);
         active.delete(pid);
         return `${who}: folds`;
       }
-
       if (act === "check") return `${who}: checks`;
 
       if (act === "bet"){
-        const newTotal = amt;
+        let newTotal = amt;
+        // もし増分が入ってたら保険（ほぼ来ない想定）
+        if (newTotal < getC() - 1e-9) newTotal = getC() + amt;
+
         const put = Math.max(0, newTotal - getC());
-        addInvest(put);
+        addInv(put);
         setC(newTotal); st.highest = Math.max(st.highest, newTotal);
         return `${who}: bets ${CUR}${money(put)}`;
       }
 
       if (act === "call"){
-        let newTotal = amt;
-        let put = newTotal - getC();
-        if (put < -1e-9){
-          put = amt;
-          newTotal = getC() + put;
+        let targetTotal = amt;
+
+        // OHHによっては「合計」か「追加額」か揺れるので保険
+        if (targetTotal < getC() - 1e-9) targetTotal = getC() + amt;
+        if (targetTotal <= st.highest + 1e-9 && Math.abs(targetTotal - st.highest) > 1e-6) {
+          // "calls 1.50" のように追加額だった場合
+          targetTotal = getC() + amt;
         }
-        put = Math.max(0, put);
-        addInvest(put);
-        setC(newTotal); st.highest = Math.max(st.highest, newTotal);
+
+        const put = Math.max(0, targetTotal - getC());
+        addInv(put);
+        setC(targetTotal); st.highest = Math.max(st.highest, targetTotal);
         return `${who}: calls ${CUR}${money(put)}`;
       }
 
       if (act === "raise" || act === "allin"){
         const highestBefore = st.highest;
         let newTotal = amt;
-        if (newTotal <= highestBefore + 1e-9) newTotal = highestBefore + amt; // 増分表記の保険
+
+        // 増分が入ってるケースの保険
+        if (newTotal <= highestBefore + 1e-9) newTotal = highestBefore + amt;
+
         const raiseInc = Math.max(0, newTotal - highestBefore);
         const put = Math.max(0, newTotal - getC());
-        addInvest(put);
+        addInv(put);
+
         setC(newTotal); st.highest = Math.max(st.highest, newTotal);
         return `${who}: raises ${CUR}${money(raiseInc)} to ${CUR}${money(newTotal)}`;
       }
@@ -374,13 +406,28 @@
       return amt ? `${who}: ${a.action} ${CUR}${money(amt)}` : `${who}: ${a.action}`;
     }
 
-    function maybeEndByFold(st, street){
+    // --- Preflop: posts -> HOLE CARDS -> rest ---
+    const preSt = streetState();
+    let idx = 0;
+    while (idx < preActs.length && ["post_sb","post_bb","post_ante"].includes(normalizeAct(preActs[idx].action))){
+      const line = applyAction(preActs[idx], preSt, "Preflop");
+      if (line) out.push(line);
+      idx++;
+    }
+
+    out.push("*** HOLE CARDS ***");
+    out.push(`Dealt to Hero ${cardsBracket(hero.cards || ["??","??"])}`);
+
+    let endedByFold = false;
+    let endStreet = null;
+    let uncalledLine = null;
+
+    function checkEndByFold(st, street){
       if (active.size === 1){
         endedByFold = true;
         endStreet = street;
-        winnerPid = Array.from(active)[0];
 
-        // uncalled = maxContrib - secondMaxContrib（このstreetの未コール分）
+        const winnerPid = Array.from(active)[0];
         const { max, second } = max2(st.contrib.values());
         const uncalled = Math.max(0, max - second);
         if (uncalled > 0){
@@ -391,31 +438,22 @@
       return false;
     }
 
-    // --- Preflop: posts -> HOLE CARDS -> rest ---
-    const preSt = streetState();
-    let i = 0;
-    while (i < preActs.length && ["post_sb","post_bb","post_ante"].includes(normalizeAct(preActs[i].action))){
-      const line = applyAction(preActs[i], preSt, "Preflop");
+    for (; idx < preActs.length; idx++){
+      const line = applyAction(preActs[idx], preSt, "Preflop");
       if (line) out.push(line);
-      i++;
-    }
-    out.push("*** HOLE CARDS ***");
-    out.push(`Dealt to Hero ${cardsBracket(hero.cards || ["??","??"])}`);
-    for (; i < preActs.length; i++){
-      const line = applyAction(preActs[i], preSt, "Preflop");
-      if (line) out.push(line);
-      if (maybeEndByFold(preSt, "Preflop")) break;
+      if (checkEndByFold(preSt, "Preflop")) break;
     }
 
-    // streets helper
+    const board = [];
+
     function doStreet(street){
       if (endedByFold) return;
       const r = getRound(ohh, street);
       if (!r) return;
+
       const cards = Array.isArray(r.cards) ? r.cards : [];
       const acts  = Array.isArray(r.actions) ? r.actions : [];
 
-      // header + board
       if (street === "Flop"){
         board.length = 0;
         for (const c of cards) board.push(c);
@@ -432,7 +470,7 @@
       for (const a of acts){
         const line = applyAction(a, st, street);
         if (line) out.push(line);
-        if (maybeEndByFold(st, street)) return;
+        if (checkEndByFold(st, street)) return;
       }
     }
 
@@ -440,26 +478,24 @@
     doStreet("Turn");
     doStreet("River");
 
-    // winner amount
-    if (winnerPid === null){
-      // showdown想定なら winMap最大をwinnerにする（簡易）
-      if (winMap.size){
-        winnerPid = Array.from(winMap.entries()).sort((a,b)=>b[1]-a[1])[0][0];
-      }
-    }
-
+    // Winner collected lines
     if (endedByFold && uncalledLine) out.push(uncalledLine);
 
-    // collected line（あるとWizardが喜びがち）
-    if (winnerPid !== null){
-      const winAmt = winMap.get(winnerPid);
-      if (typeof winAmt === "number"){
-        out.push(`${nameOf(winnerPid)} collected ${CUR}${money(winAmt)} from pot`);
+    // collected (複数winnerにも対応)
+    if (winMap.size){
+      for (const [pid, amt] of winMap.entries()){
+        out.push(`${nameOf(pid)} collected ${CUR}${money(amt)} from pot`);
       }
     }
 
-    // ★フォールド勝ちはSHOW DOWN無し（PokerStars寄せ）
-    if (!endedByFold){
+    // フォールド勝ちはPokerStars例に合わせて "doesn't show hand" を出す
+    if (endedByFold){
+      // winner全員に付けても問題になりにくい
+      for (const pid of winMap.keys()){
+        out.push(`${nameOf(pid)}: doesn't show hand`);
+      }
+    } else {
+      // ショウダウンがあるなら最低限 Hero の shows を出す（他は出さない）
       out.push("*** SHOW DOWN ***");
       out.push(`Hero: shows ${cardsBracket(hero.cards || ["??","??"])}`);
     }
@@ -469,33 +505,27 @@
     out.push(`Total pot ${CUR}${money(totalPot)} | Rake ${CUR}${money(rake)}`);
     if (board.length) out.push(`Board ${cardsBracket(board)}`);
 
-    function roleText(pid){
-      const tags = [];
-      if (btnPid !== null && pid === btnPid) tags.push("button");
-      if (sbPid !== null && pid === sbPid) tags.push("small blind");
-      if (bbPid !== null && pid === bbPid) tags.push("big blind");
-      return tags.length ? ` (${tags.join(") (")})` : "";
-    }
-
     for (const s of seats){
       const p = seat2p.get(s);
       const pid = p.pid;
-      const who = nameOf(pid) + roleText(pid);
+      const who = nameOf(pid);
+      const roles = roleTags(pid);
+      const head = `Seat ${p.seat}: ${who}${roles ? " " + roles : ""} `;
 
-      if (winnerPid !== null && pid === winnerPid && winMap.has(pid)){
-        out.push(`Seat ${p.seat}: ${who} collected (${CUR}${money(winMap.get(pid))})`);
+      if (winMap.has(pid)){
+        out.push(`${head}collected (${CUR}${money(winMap.get(pid))})`);
         continue;
       }
 
-      if (foldAt.has(pid)){
-        const st = foldAt.get(pid);
+      if (foldAtMap.has(pid)){
+        const st = foldAtMap.get(pid);
         const didntBet = (invested.get(pid) || 0) <= 0 ? " (didn't bet)" : "";
-        out.push(`Seat ${p.seat}: ${who} ${foldText(st)}${didntBet}`);
+        out.push(`${head}${foldText(st)}${didntBet}`);
         continue;
       }
 
-      // 負け / それ以外（簡易）
-      out.push(`Seat ${p.seat}: ${who} mucked`);
+      // ここに残るのは「負けたがフォールドしてない」など（簡易）
+      out.push(`${head}mucked`);
     }
 
     return out.join("\n");
@@ -512,27 +542,16 @@
     setStatus(`変換OK: ${outs.length}ハンド`, true);
   }
 
-  let debounceTimer = null;
-  inputEl.addEventListener("input", () => {
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      try{
-        const objs = loadJsonObjects(inputEl.value);
-        if (!objs.length) return;
-        updateHeroMenuFromFirstHand(objs);
-      }catch{}
-    }, 250);
-  });
-
+  // イベント
   $("convertBtn").addEventListener("click", () => {
     try { convertAll(); }
-    catch(e){ outputEl.value = ""; setStatus(`エラー: ${e.message ?? e}`, false); }
+    catch(e){ outputEl.value=""; setStatus(`エラー: ${e.message ?? e}`, false); }
   });
 
   heroSelect.addEventListener("change", () => {
     if ((inputEl.value || "").trim()){
       try { convertAll(); }
-      catch(e){ outputEl.value = ""; setStatus(`エラー: ${e.message ?? e}`, false); }
+      catch(e){ outputEl.value=""; setStatus(`エラー: ${e.message ?? e}`, false); }
     }
   });
 
@@ -540,7 +559,7 @@
     try{
       await navigator.clipboard.writeText(outputEl.value || "");
       setStatus("コピーしました。GTO Wizardへ貼り付けOK。", true);
-    }catch{
+    } catch {
       setStatus("コピー失敗。右の出力欄を手動で全選択→コピーしてください。", false);
     }
   });
@@ -558,6 +577,7 @@
     URL.revokeObjectURL(url);
     setStatus("TXTをダウンロードしました。", true);
   });
+
 })();
 </script>
 </body>
